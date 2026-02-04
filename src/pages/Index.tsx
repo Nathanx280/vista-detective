@@ -2,16 +2,22 @@ import { useState } from "react";
 import { ImageUploader } from "@/components/ImageUploader";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { DiscoveryGallery } from "@/components/DiscoveryGallery";
+import { HeroSection } from "@/components/HeroSection";
+import { ParticleField } from "@/components/effects/ParticleField";
+import { GlowOrbs } from "@/components/effects/GlowOrbs";
+import { GridOverlay } from "@/components/effects/GridOverlay";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Satellite, Radar, Eye, Sparkles } from "lucide-react";
+import { Radar, Zap, ArrowDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface AnalysisData {
   anomaly_score: number;
   anomaly_types: string[];
   analysis: string;
   mystery_level?: string;
+  coordinates_estimate?: string;
 }
 
 const Index = () => {
@@ -65,8 +71,9 @@ const Index = () => {
         narration: data.narration,
       });
 
-      toast.success("Analysis complete!", {
-        description: `Anomaly score: ${data.analysis.anomaly_score}/10`,
+      const scoreEmoji = data.analysis.anomaly_score >= 7 ? "🔴" : data.analysis.anomaly_score >= 5 ? "🟡" : "🟢";
+      toast.success(`${scoreEmoji} Analysis Complete!`, {
+        description: `Anomaly score: ${data.analysis.anomaly_score}/10 - ${data.analysis.mystery_level || 'Unknown'} mystery level`,
       });
     } catch (error) {
       console.error("Analysis error:", error);
@@ -81,69 +88,56 @@ const Index = () => {
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
       {/* Background effects */}
+      <ParticleField />
+      <GlowOrbs />
+      <GridOverlay />
       <div className="noise-overlay" />
-      <div className="scanline opacity-30" />
-      
-      {/* Animated gradient orbs */}
-      <div className="fixed top-1/4 -left-32 w-96 h-96 bg-primary/20 rounded-full blur-[120px] animate-float pointer-events-none" />
-      <div className="fixed bottom-1/4 -right-32 w-96 h-96 bg-destructive/10 rounded-full blur-[120px] animate-float pointer-events-none" style={{ animationDelay: "-1.5s" }} />
+      <div className="scanline opacity-20" />
 
-      <div className="relative z-10 container mx-auto px-4 py-8 max-w-6xl">
+      {/* Hero gradient overlay */}
+      <div 
+        className="fixed inset-x-0 top-0 h-[50vh] pointer-events-none z-0"
+        style={{
+          background: 'radial-gradient(ellipse 80% 50% at 50% -20%, hsl(185 100% 55% / 0.08), transparent)',
+        }}
+      />
+
+      <div className="relative z-10 container mx-auto px-4 py-6 md:py-10 max-w-6xl">
         {/* Header */}
-        <header className="text-center mb-12 space-y-4">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <div className="relative">
-              <Satellite className="w-12 h-12 text-primary" />
-              <div className="absolute inset-0 w-12 h-12 text-primary blur-lg opacity-50" />
-            </div>
-          </div>
-          
-          <h1 className="font-display text-4xl md:text-6xl font-bold tracking-wider">
-            <span className="text-gradient">EARTH ANOMALY</span>
-            <br />
-            <span className="text-foreground">DETECTOR</span>
-          </h1>
-          
-          <p className="text-muted-foreground max-w-xl mx-auto text-lg">
-            Upload Google Earth screenshots. AI analyzes for anomalies. 
-            Generate viral mystery content automatically.
-          </p>
-
-          {/* Feature badges */}
-          <div className="flex flex-wrap items-center justify-center gap-3 pt-4">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-muted/50 border border-border text-sm">
-              <Eye className="w-4 h-4 text-primary" />
-              <span className="text-muted-foreground">AI Vision Analysis</span>
-            </div>
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-muted/50 border border-border text-sm">
-              <Radar className="w-4 h-4 text-primary" />
-              <span className="text-muted-foreground">Anomaly Detection</span>
-            </div>
-            <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-muted/50 border border-border text-sm">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span className="text-muted-foreground">Auto Narration</span>
-            </div>
-          </div>
-        </header>
+        <HeroSection />
 
         {/* Main Content */}
-        <main className="space-y-12">
+        <main className="space-y-12 md:space-y-16">
           {/* Upload Section */}
-          <section className="glass-panel p-6 md:p-8 rounded-2xl">
+          <section className="glass-panel p-4 md:p-8 rounded-2xl relative overflow-hidden">
+            {/* Section header */}
+            <div className="flex items-center gap-2 mb-6 text-muted-foreground">
+              <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
+              <span className="font-mono text-xs tracking-wider uppercase">Upload Module</span>
+            </div>
+
             <ImageUploader 
               onImageSelect={handleImageSelect} 
               isAnalyzing={isAnalyzing}
             />
 
             {currentImage && !isAnalyzing && !analysisResult && (
-              <div className="mt-6 flex justify-center">
+              <div className="mt-8 flex flex-col items-center gap-4">
+                <ArrowDown className="w-5 h-5 text-muted-foreground animate-bounce" />
                 <Button
                   size="lg"
                   onClick={analyzeImage}
-                  className="font-display tracking-wider text-lg px-8 py-6 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 glow-border"
+                  className={cn(
+                    "font-display tracking-widest text-base md:text-lg px-8 md:px-12 py-6 md:py-7 rounded-xl",
+                    "bg-gradient-to-r from-primary via-primary to-primary/80",
+                    "hover:from-primary/90 hover:via-primary hover:to-primary/70",
+                    "btn-primary-glow",
+                    "transition-all duration-300"
+                  )}
                 >
-                  <Radar className="w-5 h-5 mr-2 animate-pulse" />
+                  <Radar className="w-5 h-5 mr-3 animate-pulse" />
                   SCAN FOR ANOMALIES
+                  <Zap className="w-4 h-4 ml-3" />
                 </Button>
               </div>
             )}
@@ -151,7 +145,13 @@ const Index = () => {
 
           {/* Analysis Results */}
           {analysisResult && (
-            <section className="glass-panel p-6 md:p-8 rounded-2xl animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <section className="glass-panel-glow p-4 md:p-8 rounded-2xl animate-in fade-in slide-in-from-bottom-6 duration-700">
+              {/* Section header */}
+              <div className="flex items-center gap-2 mb-6 text-destructive">
+                <div className="w-1.5 h-1.5 bg-destructive rounded-full animate-pulse" />
+                <span className="font-mono text-xs tracking-wider uppercase">Analysis Results</span>
+              </div>
+
               <AnalysisResult
                 analysis={analysisResult.analysis}
                 narration={analysisResult.narration}
@@ -161,14 +161,27 @@ const Index = () => {
           )}
 
           {/* Discovery Gallery */}
-          <section>
+          <section className="glass-panel p-4 md:p-8 rounded-2xl">
+            {/* Section header */}
+            <div className="flex items-center gap-2 mb-6 text-muted-foreground">
+              <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
+              <span className="font-mono text-xs tracking-wider uppercase">Discovery Archive</span>
+            </div>
+            
             <DiscoveryGallery />
           </section>
         </main>
 
         {/* Footer */}
-        <footer className="mt-16 text-center text-sm text-muted-foreground/60">
-          <p>For entertainment purposes only. Not affiliated with Google Earth.</p>
+        <footer className="mt-16 md:mt-24 py-8 text-center border-t border-border/30">
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground/60 font-mono">
+              For entertainment purposes only • Not affiliated with Google Earth
+            </p>
+            <p className="text-xs text-muted-foreground/40">
+              Powered by AI Vision Analysis
+            </p>
+          </div>
         </footer>
       </div>
     </div>
