@@ -168,7 +168,7 @@ const Index = () => {
               <span className="font-mono text-xs tracking-wider uppercase">Discovery Archive</span>
             </div>
             
-            <DiscoveryGallery />
+            <DiscoveryGallery onImportImage={handleImageSelect} />
           </section>
         </main>
 

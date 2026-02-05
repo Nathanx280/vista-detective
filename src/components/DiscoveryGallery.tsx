@@ -4,10 +4,13 @@ import { AnomalyScore } from "./AnomalyScore";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { formatDistanceToNow } from "date-fns";
-import { Loader2, Clock, Eye, ChevronRight, Sparkles } from "lucide-react";
+import { Loader2, Clock, Eye, ChevronRight, Sparkles, Upload, Trash2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { DiscoveryDetailDialog } from "./DiscoveryDetailDialog";
+import { toast } from "sonner";
 
 interface Discovery {
   id: string;
@@ -18,12 +21,19 @@ interface Discovery {
   narration: string | null;
   status: string | null;
   created_at: string;
+  location_hint?: string | null;
 }
 
-export function DiscoveryGallery() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  
-  const { data: discoveries, isLoading } = useQuery({
+interface DiscoveryGalleryProps {
+  onImportImage?: (imageData: string) => void;
+}
+
+export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
+  const [selectedDiscovery, setSelectedDiscovery] = useState<Discovery | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { data: discoveries, isLoading, refetch } = useQuery({
     queryKey: ["discoveries"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -37,6 +47,40 @@ export function DiscoveryGallery() {
     },
     refetchInterval: 5000,
   });
+
+  const handleCardClick = (discovery: Discovery) => {
+    if (discovery.status === "complete") {
+      setSelectedDiscovery(discovery);
+      setDialogOpen(true);
+    }
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please select an image file");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const imageData = event.target?.result as string;
+      if (onImportImage) {
+        onImportImage(imageData);
+        toast.success("Image imported! Ready to analyze.");
+      }
+    };
+    reader.readAsDataURL(file);
+    
+    // Reset input
+    e.target.value = "";
+  };
 
   if (isLoading) {
     return (
@@ -79,12 +123,20 @@ export function DiscoveryGallery() {
   }
 
   const completedDiscoveries = discoveries.filter(d => d.status === "complete");
-  const pendingDiscoveries = discoveries.filter(d => d.status !== "complete");
 
   return (
     <div className="space-y-6">
+      {/* Hidden file input for import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <h2 className="font-display text-xl md:text-2xl text-foreground tracking-wide flex items-center gap-3">
           <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
           RECENT DISCOVERIES
@@ -92,8 +144,32 @@ export function DiscoveryGallery() {
             {completedDiscoveries.length} analyzed
           </Badge>
         </h2>
+        
+        {/* Action buttons */}
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refetch()}
+            className="gap-2"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </Button>
+          {onImportImage && (
+            <Button
+              variant="glow"
+              size="sm"
+              onClick={handleImportClick}
+              className="gap-2"
+            >
+              <Upload className="w-4 h-4" />
+              Import Image
+            </Button>
+          )}
+        </div>
       </div>
-      
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
         {discoveries.map((discovery, index) => (
           <Card 
@@ -101,9 +177,9 @@ export function DiscoveryGallery() {
             className={cn(
               "glass-panel overflow-hidden group cursor-pointer transition-all duration-500",
               "hover:scale-[1.02] hover:border-primary/40",
-              selectedId === discovery.id && "ring-2 ring-primary/50"
+              discovery.status === "complete" && "hover:ring-2 hover:ring-primary/30"
             )}
-            onClick={() => setSelectedId(selectedId === discovery.id ? null : discovery.id)}
+            onClick={() => handleCardClick(discovery)}
             style={{ animationDelay: `${index * 100}ms` }}
           >
             <div className="relative h-48 md:h-52 overflow-hidden">
@@ -184,10 +260,7 @@ export function DiscoveryGallery() {
 
               {/* Analysis preview */}
               {discovery.ai_analysis && (
-                <p className={cn(
-                  "text-sm text-muted-foreground transition-all duration-300",
-                  selectedId === discovery.id ? "line-clamp-none" : "line-clamp-2"
-                )}>
+                <p className="text-sm text-muted-foreground line-clamp-2">
                   {discovery.ai_analysis}
                 </p>
               )}
@@ -198,15 +271,24 @@ export function DiscoveryGallery() {
                   <Clock className="w-3 h-3" />
                   {formatDistanceToNow(new Date(discovery.created_at), { addSuffix: true })}
                 </p>
-                <ChevronRight className={cn(
-                  "w-4 h-4 text-muted-foreground/30 transition-transform duration-300",
-                  selectedId === discovery.id && "rotate-90"
-                )} />
+                {discovery.status === "complete" && (
+                  <span className="text-[10px] text-primary/60 flex items-center">
+                    <Eye className="w-3 h-3 mr-1" />
+                    Click to view
+                  </span>
+                )}
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
+
+      {/* Detail Dialog */}
+      <DiscoveryDetailDialog
+        discovery={selectedDiscovery}
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+      />
     </div>
   );
 }
