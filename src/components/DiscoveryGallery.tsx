@@ -1,46 +1,69 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { AnomalyScore } from "./AnomalyScore";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { formatDistanceToNow } from "date-fns";
-import { Loader2, Clock, Eye, ChevronRight, Sparkles, Upload, Trash2, RefreshCw } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Eye, Upload, RefreshCw, Download, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useState, useRef } from "react";
-import { DiscoveryDetailDialog } from "./DiscoveryDetailDialog";
+import { useState, useRef, useMemo, useCallback } from "react";
 import { toast } from "sonner";
-
-interface Discovery {
-  id: string;
-  image_url: string;
-  anomaly_score: number | null;
-  anomaly_types: string[] | null;
-  ai_analysis: string | null;
-  narration: string | null;
-  status: string | null;
-  created_at: string;
-  location_hint?: string | null;
-}
+import { 
+  Discovery, 
+  GalleryFilters, 
+  ViewMode, 
+  filterDiscoveries 
+} from "@/types/discovery";
+import { useFavorites } from "@/hooks/use-favorites";
+import { GalleryControls } from "./gallery/GalleryControls";
+import { GalleryStats } from "./gallery/GalleryStats";
+import { DiscoveryCard } from "./gallery/DiscoveryCard";
+import { DiscoveryDetailDialog } from "./gallery/DiscoveryDetailDialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface DiscoveryGalleryProps {
   onImportImage?: (imageData: string) => void;
 }
 
 export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
-  const [selectedDiscovery, setSelectedDiscovery] = useState<Discovery | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Dialog state
+  const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  
+  // Delete confirmation
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  
+  // View & filter state
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [filters, setFilters] = useState<GalleryFilters>({
+    sort: 'newest',
+    filter: 'all',
+    search: '',
+    showFavoritesOnly: false,
+  });
 
-  const { data: discoveries, isLoading, refetch } = useQuery({
+  // Favorites hook
+  const { favorites, toggleFavorite, isFavorite, count: favoritesCount } = useFavorites();
+
+  // Fetch discoveries
+  const { data: discoveries = [], isLoading, refetch } = useQuery({
     queryKey: ["discoveries"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("discoveries")
         .select("*")
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(100);
 
       if (error) throw error;
       return data as Discovery[];
@@ -48,12 +71,49 @@ export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
     refetchInterval: 5000,
   });
 
-  const handleCardClick = (discovery: Discovery) => {
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("discoveries").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["discoveries"] });
+      toast.success("Discovery deleted");
+      setDeleteId(null);
+    },
+    onError: () => {
+      toast.error("Failed to delete discovery");
+    },
+  });
+
+  // Filtered discoveries
+  const filteredDiscoveries = useMemo(
+    () => filterDiscoveries(discoveries, filters, favorites),
+    [discoveries, filters, favorites]
+  );
+
+  // Get complete discoveries for navigation
+  const completeDiscoveries = useMemo(
+    () => filteredDiscoveries.filter(d => d.status === 'complete'),
+    [filteredDiscoveries]
+  );
+
+  const selectedDiscovery = selectedIndex >= 0 ? completeDiscoveries[selectedIndex] : null;
+
+  const handleCardClick = useCallback((discovery: Discovery) => {
     if (discovery.status === "complete") {
-      setSelectedDiscovery(discovery);
+      const index = completeDiscoveries.findIndex(d => d.id === discovery.id);
+      setSelectedIndex(index);
       setDialogOpen(true);
     }
-  };
+  }, [completeDiscoveries]);
+
+  const handleNavigate = useCallback((index: number) => {
+    if (index >= 0 && index < completeDiscoveries.length) {
+      setSelectedIndex(index);
+    }
+  }, [completeDiscoveries.length]);
 
   const handleImportClick = () => {
     fileInputRef.current?.click();
@@ -77,9 +137,37 @@ export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
       }
     };
     reader.readAsDataURL(file);
-    
-    // Reset input
     e.target.value = "";
+  };
+
+  const handleExportAll = () => {
+    const data = completeDiscoveries.map(d => ({
+      id: d.id,
+      anomaly_score: d.anomaly_score,
+      anomaly_types: d.anomaly_types,
+      analysis: d.ai_analysis,
+      narration: d.narration,
+      location: d.location_hint,
+      created_at: d.created_at,
+    }));
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `anomaly-discoveries-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${data.length} discoveries!`);
+  };
+
+  const handleDeleteRequest = (id: string) => {
+    setDeleteId(id);
+  };
+
+  const handleDeleteConfirm = () => {
+    if (deleteId) {
+      deleteMutation.mutate(deleteId);
+    }
   };
 
   if (isLoading) {
@@ -122,8 +210,6 @@ export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
     );
   }
 
-  const completedDiscoveries = discoveries.filter(d => d.status === "complete");
-
   return (
     <div className="space-y-6">
       {/* Hidden file input for import */}
@@ -139,30 +225,21 @@ export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <h2 className="font-display text-xl md:text-2xl text-foreground tracking-wide flex items-center gap-3">
           <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
-          RECENT DISCOVERIES
-          <Badge variant="outline" className="border-primary/30 text-primary/70 font-mono text-xs ml-2">
-            {completedDiscoveries.length} analyzed
-          </Badge>
+          DISCOVERY ARCHIVE
         </h2>
         
         {/* Action buttons */}
         <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => refetch()}
-            className="gap-2"
-          >
+          <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2">
             <RefreshCw className="w-4 h-4" />
             Refresh
           </Button>
+          <Button variant="outline" size="sm" onClick={handleExportAll} className="gap-2">
+            <Download className="w-4 h-4" />
+            Export All
+          </Button>
           {onImportImage && (
-            <Button
-              variant="glow"
-              size="sm"
-              onClick={handleImportClick}
-              className="gap-2"
-            >
+            <Button variant="glow" size="sm" onClick={handleImportClick} className="gap-2">
               <Upload className="w-4 h-4" />
               Import Image
             </Button>
@@ -170,125 +247,87 @@ export function DiscoveryGallery({ onImportImage }: DiscoveryGalleryProps) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
-        {discoveries.map((discovery, index) => (
-          <Card 
-            key={discovery.id} 
-            className={cn(
-              "glass-panel overflow-hidden group cursor-pointer transition-all duration-500",
-              "hover:scale-[1.02] hover:border-primary/40",
-              discovery.status === "complete" && "hover:ring-2 hover:ring-primary/30"
-            )}
-            onClick={() => handleCardClick(discovery)}
-            style={{ animationDelay: `${index * 100}ms` }}
+      {/* Stats */}
+      <GalleryStats discoveries={discoveries} />
+
+      {/* Controls */}
+      <GalleryControls
+        filters={filters}
+        onFiltersChange={setFilters}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        favoritesCount={favoritesCount}
+        resultCount={filteredDiscoveries.length}
+        totalCount={discoveries.length}
+      />
+
+      {/* Empty filtered state */}
+      {filteredDiscoveries.length === 0 && (
+        <div className="glass-panel p-8 text-center rounded-xl">
+          <p className="text-muted-foreground">No discoveries match your filters</p>
+          <Button 
+            variant="link" 
+            onClick={() => setFilters({ sort: 'newest', filter: 'all', search: '', showFavoritesOnly: false })}
           >
-            <div className="relative h-48 md:h-52 overflow-hidden">
-              <img
-                src={discovery.image_url}
-                alt="Discovery"
-                className={cn(
-                  "w-full h-full object-cover transition-all duration-700",
-                  "group-hover:scale-110"
-                )}
-              />
-              
-              {/* Gradient overlay */}
-              <div className="absolute inset-0 bg-gradient-to-t from-card via-card/30 to-transparent" />
-              
-              {/* Status overlay for analyzing */}
-              {discovery.status === "analyzing" && (
-                <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="relative">
-                      <div className="w-12 h-12 rounded-full border-2 border-primary/30" />
-                      <div className="absolute inset-0 w-12 h-12 rounded-full border-2 border-transparent border-t-primary animate-radar" />
-                      <Loader2 className="absolute inset-0 m-auto w-5 h-5 text-primary animate-spin" />
-                    </div>
-                    <span className="text-primary font-display text-xs tracking-widest">ANALYZING...</span>
-                  </div>
-                </div>
-              )}
+            Clear filters
+          </Button>
+        </div>
+      )}
 
-              {/* Pending status */}
-              {discovery.status === "pending" && (
-                <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <Clock className="w-6 h-6 text-muted-foreground" />
-                    <span className="text-muted-foreground font-display text-xs tracking-widest">PENDING</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Score badge */}
-              {discovery.status === "complete" && discovery.anomaly_score !== null && (
-                <div className="absolute top-3 right-3 transform group-hover:scale-110 transition-transform duration-300">
-                  <AnomalyScore score={discovery.anomaly_score} size="sm" animate={false} />
-                </div>
-              )}
-
-              {/* High score indicator */}
-              {discovery.anomaly_score && discovery.anomaly_score >= 7 && (
-                <div className="absolute top-3 left-3">
-                  <Badge className="bg-destructive/90 text-destructive-foreground font-display text-xs animate-pulse">
-                    <Sparkles className="w-3 h-3 mr-1" />
-                    HIGH ANOMALY
-                  </Badge>
-                </div>
-              )}
-            </div>
-
-            <CardContent className="p-4 space-y-3">
-              {/* Anomaly type badges */}
-              {discovery.anomaly_types && discovery.anomaly_types.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {discovery.anomaly_types.slice(0, 3).map((type, index) => (
-                    <Badge
-                      key={index}
-                      variant="outline"
-                      className="text-[10px] border-primary/20 text-primary/70 font-mono"
-                    >
-                      {type}
-                    </Badge>
-                  ))}
-                  {discovery.anomaly_types.length > 3 && (
-                    <Badge variant="outline" className="text-[10px] border-muted-foreground/20 text-muted-foreground">
-                      +{discovery.anomaly_types.length - 3}
-                    </Badge>
-                  )}
-                </div>
-              )}
-
-              {/* Analysis preview */}
-              {discovery.ai_analysis && (
-                <p className="text-sm text-muted-foreground line-clamp-2">
-                  {discovery.ai_analysis}
-                </p>
-              )}
-
-              {/* Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-border/30">
-                <p className="text-xs text-muted-foreground/50 font-mono flex items-center gap-1">
-                  <Clock className="w-3 h-3" />
-                  {formatDistanceToNow(new Date(discovery.created_at), { addSuffix: true })}
-                </p>
-                {discovery.status === "complete" && (
-                  <span className="text-[10px] text-primary/60 flex items-center">
-                    <Eye className="w-3 h-3 mr-1" />
-                    Click to view
-                  </span>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+      {/* Discovery Grid */}
+      <div className={cn(
+        viewMode === 'grid' && "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6",
+        viewMode === 'list' && "flex flex-col gap-3",
+        viewMode === 'compact' && "grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2"
+      )}>
+        {filteredDiscoveries.map((discovery, index) => (
+          <DiscoveryCard
+            key={discovery.id}
+            discovery={discovery}
+            viewMode={viewMode}
+            isFavorite={isFavorite(discovery.id)}
+            onToggleFavorite={() => toggleFavorite(discovery.id)}
+            onDelete={() => handleDeleteRequest(discovery.id)}
+            onClick={() => handleCardClick(discovery)}
+            index={index}
+          />
         ))}
       </div>
 
       {/* Detail Dialog */}
       <DiscoveryDetailDialog
         discovery={selectedDiscovery}
+        discoveries={completeDiscoveries}
+        currentIndex={selectedIndex}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
+        onNavigate={handleNavigate}
+        isFavorite={selectedDiscovery ? isFavorite(selectedDiscovery.id) : false}
+        onToggleFavorite={() => selectedDiscovery && toggleFavorite(selectedDiscovery.id)}
+        onDelete={() => selectedDiscovery && handleDeleteRequest(selectedDiscovery.id)}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Discovery?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete the discovery from the archive.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
