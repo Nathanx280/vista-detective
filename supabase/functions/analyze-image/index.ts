@@ -6,21 +6,192 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Input validation constants
+const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_PAYLOAD_SIZE = 12 * 1024 * 1024; // 12MB
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const MAX_REQUESTS_PER_WINDOW = 10; // 10 requests per hour per IP
+
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Allowed image types for data URIs
+const ALLOWED_IMAGE_TYPES = ['jpeg', 'jpg', 'png', 'webp', 'gif'];
+const DATA_URI_REGEX = new RegExp(`^data:image\\/(${ALLOWED_IMAGE_TYPES.join('|')});base64,`, 'i');
+
+// Validate image URL format and size
+function validateImageUrl(imageUrl: unknown): { valid: boolean; error?: string } {
+  if (!imageUrl || typeof imageUrl !== 'string') {
+    return { valid: false, error: 'Image URL is required and must be a string' };
+  }
+
+  // Check if it's a data URI
+  if (imageUrl.startsWith('data:')) {
+    if (!DATA_URI_REGEX.test(imageUrl)) {
+      return { valid: false, error: `Invalid image format. Allowed types: ${ALLOWED_IMAGE_TYPES.join(', ')}` };
+    }
+
+    // Estimate base64 size (length * 0.75 gives approximate byte size)
+    const base64Part = imageUrl.split(',')[1];
+    if (!base64Part) {
+      return { valid: false, error: 'Malformed data URI' };
+    }
+
+    const estimatedBytes = base64Part.length * 0.75;
+    if (estimatedBytes > MAX_IMAGE_SIZE_BYTES) {
+      return { valid: false, error: `Image too large. Maximum size is ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)}MB` };
+    }
+
+    // Validate base64 encoding
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64Part)) {
+      return { valid: false, error: 'Invalid base64 encoding' };
+    }
+  } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+    // Allow external URLs but validate format
+    try {
+      new URL(imageUrl);
+    } catch {
+      return { valid: false, error: 'Invalid image URL format' };
+    }
+
+    // Limit URL length
+    if (imageUrl.length > 2048) {
+      return { valid: false, error: 'Image URL too long' };
+    }
+  } else {
+    return { valid: false, error: 'Image must be a data URI or HTTPS URL' };
+  }
+
+  return { valid: true };
+}
+
+// Validate discovery ID format
+function validateDiscoveryId(discoveryId: unknown): { valid: boolean; error?: string } {
+  if (discoveryId === undefined || discoveryId === null) {
+    return { valid: true }; // Optional field
+  }
+
+  if (typeof discoveryId !== 'string') {
+    return { valid: false, error: 'Discovery ID must be a string' };
+  }
+
+  if (!UUID_REGEX.test(discoveryId)) {
+    return { valid: false, error: 'Invalid discovery ID format' };
+  }
+
+  return { valid: true };
+}
+
+// Rate limiting using database
+// deno-lint-ignore no-explicit-any
+async function checkRateLimit(supabase: any, clientIP: string): Promise<{ allowed: boolean; remaining: number }> {
+  const windowStart = new Date(Date.now() - RATE_LIMIT_WINDOW_MS).toISOString();
+  
+  // Count recent requests from this IP
+  const { count, error } = await supabase
+    .from('discoveries')
+    .select('*', { count: 'exact', head: true })
+    .gte('created_at', windowStart);
+
+  if (error) {
+    console.error('Rate limit check error:', error);
+    // Allow request on error to avoid blocking legitimate users
+    return { allowed: true, remaining: MAX_REQUESTS_PER_WINDOW };
+  }
+
+  const requestCount = count || 0;
+  const remaining = Math.max(0, MAX_REQUESTS_PER_WINDOW - requestCount);
+  
+  return {
+    allowed: requestCount < MAX_REQUESTS_PER_WINDOW,
+    remaining
+  };
+}
+
+// Safe error messages (don't expose internal details)
+const SAFE_ERROR_MESSAGES = [
+  'Image URL is required and must be a string',
+  'Invalid image format',
+  'Image too large',
+  'Malformed data URI',
+  'Invalid base64 encoding',
+  'Invalid image URL format',
+  'Image URL too long',
+  'Image must be a data URI or HTTPS URL',
+  'Discovery ID must be a string',
+  'Invalid discovery ID format',
+  'Rate limit exceeded. Please try again later.',
+  'Payload too large',
+];
+
+function getSafeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    // Check if it's a known safe message
+    if (SAFE_ERROR_MESSAGES.some(msg => error.message.includes(msg))) {
+      return error.message;
+    }
+    // Check for specific API errors we want to pass through
+    if (error.message.includes('Rate limit exceeded') || 
+        error.message.includes('AI credits exhausted')) {
+      return error.message;
+    }
+  }
+  return 'An error occurred processing your request';
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { imageUrl, discoveryId } = await req.json();
-    
-    if (!imageUrl) {
-      throw new Error("Image URL is required");
+    // Check payload size
+    const contentLength = req.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > MAX_PAYLOAD_SIZE) {
+      return new Response(
+        JSON.stringify({ error: 'Payload too large' }),
+        { status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Parse JSON body
+    let body: { imageUrl?: unknown; discoveryId?: unknown };
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ error: 'Invalid JSON body' }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { imageUrl, discoveryId } = body;
+
+    // Validate imageUrl
+    const imageValidation = validateImageUrl(imageUrl);
+    if (!imageValidation.valid) {
+      return new Response(
+        JSON.stringify({ error: imageValidation.error }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Validate discoveryId
+    const discoveryValidation = validateDiscoveryId(discoveryId);
+    if (!discoveryValidation.valid) {
+      return new Response(
+        JSON.stringify({ error: discoveryValidation.error }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
+      console.error("LOVABLE_API_KEY is not configured");
+      return new Response(
+        JSON.stringify({ error: 'Service configuration error' }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     // Initialize Supabase client
@@ -28,13 +199,43 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
+    // Rate limiting check
+    const clientIP = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 
+                     req.headers.get('x-real-ip') || 
+                     'unknown';
+    
+    const rateLimit = await checkRateLimit(supabase, clientIP);
+    if (!rateLimit.allowed) {
+      console.log(`Rate limit exceeded for IP: ${clientIP}`);
+      return new Response(
+        JSON.stringify({ 
+          error: 'Rate limit exceeded. Please try again later.',
+          retryAfter: Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)
+        }),
+        { 
+          status: 429, 
+          headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json",
+            "Retry-After": String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000))
+          } 
+        }
+      );
+    }
+
+    // Cast to string after validation
+    const validatedImageUrl = imageUrl as string;
+    const validatedDiscoveryId = discoveryId as string | undefined;
+
     // Update status to analyzing
-    if (discoveryId) {
+    if (validatedDiscoveryId) {
       await supabase
         .from("discoveries")
         .update({ status: "analyzing" })
-        .eq("id", discoveryId);
+        .eq("id", validatedDiscoveryId);
     }
+
+    console.log(`Processing image analysis request from IP: ${clientIP}, remaining quota: ${rateLimit.remaining}`);
 
     // Call AI to analyze the image
     const analysisResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -82,7 +283,7 @@ Respond with JSON only in this exact format:
               {
                 type: "image_url",
                 image_url: {
-                  url: imageUrl
+                  url: validatedImageUrl
                 }
               }
             ]
@@ -101,7 +302,7 @@ Respond with JSON only in this exact format:
       if (analysisResponse.status === 402) {
         throw new Error("AI credits exhausted. Please add more credits.");
       }
-      throw new Error("AI analysis failed");
+      throw new Error("Analysis service temporarily unavailable");
     }
 
     const analysisData = await analysisResponse.json();
@@ -161,7 +362,7 @@ Mystery Level: ${parsedAnalysis.mystery_level}`
     }
 
     // Update the discovery in the database
-    if (discoveryId) {
+    if (validatedDiscoveryId) {
       await supabase
         .from("discoveries")
         .update({
@@ -171,8 +372,10 @@ Mystery Level: ${parsedAnalysis.mystery_level}`
           narration: narration,
           status: "complete"
         })
-        .eq("id", discoveryId);
+        .eq("id", validatedDiscoveryId);
     }
+
+    console.log(`Analysis complete for discovery: ${validatedDiscoveryId || 'anonymous'}, score: ${parsedAnalysis.anomaly_score}`);
 
     return new Response(
       JSON.stringify({
@@ -188,7 +391,7 @@ Mystery Level: ${parsedAnalysis.mystery_level}`
     console.error("analyze-image error:", error);
     return new Response(
       JSON.stringify({
-        error: error instanceof Error ? error.message : "Unknown error occurred",
+        error: getSafeErrorMessage(error),
       }),
       {
         status: 500,
