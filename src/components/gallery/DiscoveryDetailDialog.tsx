@@ -3,14 +3,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { AnomalyScore } from "../AnomalyScore";
+import { AudioVisualizer } from "../effects/AudioVisualizer";
 import { Discovery } from "@/types/discovery";
 import { useKeyboardNavigation } from "@/hooks/use-keyboard-navigation";
 import { useSlideshow } from "@/hooks/use-slideshow";
+import { usePremiumTTS, PREMIUM_VOICES } from "@/hooks/use-premium-tts";
 import { formatDistanceToNow } from "date-fns";
 import { 
   Download, Copy, Share2, Volume2, VolumeX, X, MapPin, Clock,
   Heart, Trash2, ZoomIn, ZoomOut, RotateCcw, ChevronLeft, ChevronRight,
-  Play, Pause, Maximize2, FileJson, Printer, Link2, QrCode, Keyboard
+  Play, Pause, Maximize2, FileJson, Printer, Link2, Keyboard, Loader2, Mic
 } from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 import { toast } from "sonner";
@@ -22,6 +24,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface DiscoveryDetailDialogProps {
   discovery: Discovery | null;
@@ -46,7 +55,7 @@ export function DiscoveryDetailDialog({
   onToggleFavorite,
   onDelete,
 }: DiscoveryDetailDialogProps) {
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState<string>(PREMIUM_VOICES[0].id);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -54,6 +63,11 @@ export function DiscoveryDetailDialog({
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const imageRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef({ x: 0, y: 0 });
+
+  const { speak, stop: stopTTS, isLoading: isTTSLoading, isPlaying: isSpeaking, audioElement } = usePremiumTTS({
+    voiceId: selectedVoice,
+    onEnd: () => console.log("TTS playback ended"),
+  });
 
   const canNavigatePrev = currentIndex > 0;
   const canNavigateNext = currentIndex < discoveries.length - 1;
@@ -115,10 +129,9 @@ export function DiscoveryDetailDialog({
   useEffect(() => {
     if (!open) {
       resetZoom();
-      setIsSpeaking(false);
-      window.speechSynthesis.cancel();
+      stopTTS();
     }
-  }, [open, resetZoom]);
+  }, [open, resetZoom, stopTTS]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (zoom > 1) {
@@ -247,15 +260,9 @@ export function DiscoveryDetailDialog({
     }
   };
 
-  const handleSpeak = () => {
-    if (!('speechSynthesis' in window)) {
-      toast.error("Speech not supported in this browser");
-      return;
-    }
-
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
+  const handleSpeak = async () => {
+    if (isSpeaking || isTTSLoading) {
+      stopTTS();
       return;
     }
 
@@ -265,55 +272,7 @@ export function DiscoveryDetailDialog({
       return;
     }
 
-    // Cancel any existing speech first
-    window.speechSynthesis.cancel();
-
-    // Create utterance immediately in user gesture context
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 0.8;
-    utterance.volume = 1.0;
-    
-    utterance.onstart = () => {
-      console.log('Speech started');
-      setIsSpeaking(true);
-    };
-    utterance.onend = () => {
-      console.log('Speech ended');
-      setIsSpeaking(false);
-    };
-    utterance.onerror = (e) => {
-      console.error('Speech error:', e);
-      setIsSpeaking(false);
-      toast.error("Speech failed to play");
-    };
-
-    // Get voices and set one if available
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      // Prefer English voices
-      const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
-      utterance.voice = englishVoice;
-    }
-    
-    // Speak immediately - must happen synchronously in click handler
-    setIsSpeaking(true);
-    window.speechSynthesis.speak(utterance);
-    
-    // Chrome bug workaround: speech can pause after ~15 seconds
-    const resumeInterval = setInterval(() => {
-      if (!window.speechSynthesis.speaking) {
-        clearInterval(resumeInterval);
-      } else {
-        window.speechSynthesis.pause();
-        window.speechSynthesis.resume();
-      }
-    }, 10000);
-    
-    utterance.onend = () => {
-      clearInterval(resumeInterval);
-      setIsSpeaking(false);
-    };
+    await speak(text);
   };
 
   const handleToggleFullscreen = async () => {
@@ -572,14 +531,70 @@ export function DiscoveryDetailDialog({
               </div>
             )}
 
-            {/* Narration */}
+            {/* Narration with Premium TTS */}
             {discovery.narration && (
-              <div className="space-y-2">
-                <h4 className="text-xs font-mono text-muted-foreground uppercase tracking-wider">Mystery Narration</h4>
+              <div className="space-y-3">
+                <h4 className="text-xs font-mono text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                  <Mic className="w-3 h-3" />
+                  Mystery Narration
+                </h4>
                 <div className="relative glass-panel p-4 rounded-lg border-l-2 border-primary/50">
                   <p className="text-sm italic text-foreground/80 leading-relaxed">
                     "{discovery.narration}"
                   </p>
+                </div>
+                
+                {/* Audio Visualizer */}
+                {(isSpeaking || isTTSLoading) && (
+                  <div className="glass-panel p-3 rounded-lg">
+                    <AudioVisualizer 
+                      isPlaying={isSpeaking} 
+                      audioElement={audioElement}
+                      barCount={24}
+                      variant="bars"
+                    />
+                  </div>
+                )}
+
+                {/* Voice Selector & Play Button */}
+                <div className="flex items-center gap-2">
+                  <Select value={selectedVoice} onValueChange={setSelectedVoice} disabled={isSpeaking || isTTSLoading}>
+                    <SelectTrigger className="flex-1 h-9 text-xs">
+                      <SelectValue placeholder="Select voice" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PREMIUM_VOICES.map(voice => (
+                        <SelectItem key={voice.id} value={voice.id} className="text-xs">
+                          <span className="font-medium">{voice.name}</span>
+                          <span className="text-muted-foreground ml-1">- {voice.description}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant={isSpeaking ? "destructive" : "default"}
+                    size="sm"
+                    onClick={handleSpeak}
+                    disabled={isTTSLoading}
+                    className="gap-2 min-w-[100px]"
+                  >
+                    {isTTSLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading
+                      </>
+                    ) : isSpeaking ? (
+                      <>
+                        <VolumeX className="w-4 h-4" />
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="w-4 h-4" />
+                        Listen
+                      </>
+                    )}
+                  </Button>
                 </div>
               </div>
             )}
@@ -598,15 +613,9 @@ export function DiscoveryDetailDialog({
                 <Share2 className="w-4 h-4" />
                 Share
               </Button>
-              <Button
-                variant={isSpeaking ? "destructive" : "outline"}
-                size="sm"
-                onClick={handleSpeak}
-                disabled={!discovery.narration && !discovery.ai_analysis}
-                className="gap-2"
-              >
-                {isSpeaking ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                {isSpeaking ? "Stop" : "Listen"}
+              <Button variant="outline" size="sm" onClick={handleExportJSON} className="gap-2">
+                <FileJson className="w-4 h-4" />
+                Export JSON
               </Button>
             </div>
 

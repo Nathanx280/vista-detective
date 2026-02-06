@@ -1,11 +1,20 @@
 import { AnomalyScore } from "./AnomalyScore";
+import { AudioVisualizer } from "./effects/AudioVisualizer";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Copy, Download, Volume2, VolumeX, Share2, FileText, MapPin, AlertCircle } from "lucide-react";
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Copy, Download, Volume2, VolumeX, Share2, FileText, MapPin, AlertCircle, Loader2, Mic } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { usePremiumTTS, PREMIUM_VOICES } from "@/hooks/use-premium-tts";
 
 interface AnalysisResultProps {
   analysis: {
@@ -20,7 +29,11 @@ interface AnalysisResultProps {
 }
 
 export function AnalysisResult({ analysis, narration, imageUrl }: AnalysisResultProps) {
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState<string>(PREMIUM_VOICES[0].id);
+  
+  const { speak, stop, isLoading, isPlaying, audioElement } = usePremiumTTS({
+    voiceId: selectedVoice,
+  });
 
   const copyNarration = async () => {
     await navigator.clipboard.writeText(narration);
@@ -29,68 +42,12 @@ export function AnalysisResult({ analysis, narration, imageUrl }: AnalysisResult
     });
   };
 
-  const speakNarration = () => {
-    if (!('speechSynthesis' in window)) {
-      toast.error("Speech not supported", {
-        description: "Your browser doesn't support text-to-speech",
-      });
+  const handleSpeak = async () => {
+    if (isPlaying || isLoading) {
+      stop();
       return;
     }
-
-    if (isSpeaking) {
-      speechSynthesis.cancel();
-      setIsSpeaking(false);
-      return;
-    }
-
-    // Cancel any existing speech first
-    speechSynthesis.cancel();
-
-    // Create utterance immediately in user gesture context
-    const utterance = new SpeechSynthesisUtterance(narration);
-    utterance.rate = 0.85;
-    utterance.pitch = 0.7;
-    utterance.volume = 1.0;
-    
-    utterance.onstart = () => {
-      console.log('Speech started');
-      setIsSpeaking(true);
-    };
-    utterance.onend = () => {
-      console.log('Speech ended');
-      setIsSpeaking(false);
-    };
-    utterance.onerror = (e) => {
-      console.error('Speech error:', e);
-      setIsSpeaking(false);
-      toast.error("Speech failed to play");
-    };
-
-    // Get voices and set one if available
-    const voices = speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
-      utterance.voice = englishVoice;
-    }
-    
-    // Speak immediately - must happen synchronously in click handler
-    setIsSpeaking(true);
-    speechSynthesis.speak(utterance);
-    
-    // Chrome bug workaround: speech can pause after ~15 seconds
-    const resumeInterval = setInterval(() => {
-      if (!speechSynthesis.speaking) {
-        clearInterval(resumeInterval);
-      } else {
-        speechSynthesis.pause();
-        speechSynthesis.resume();
-      }
-    }, 10000);
-    
-    utterance.onend = () => {
-      clearInterval(resumeInterval);
-      setIsSpeaking(false);
-    };
+    await speak(narration);
   };
 
   const downloadReport = () => {
@@ -249,6 +206,39 @@ https://earth-anomaly.lovable.app
               "{narration}"
             </p>
           </div>
+
+          {/* Audio Visualizer */}
+          {(isPlaying || isLoading) && (
+            <div className="glass-panel p-4 rounded-lg">
+              <AudioVisualizer 
+                isPlaying={isPlaying} 
+                audioElement={audioElement}
+                barCount={32}
+                variant="bars"
+              />
+            </div>
+          )}
+
+          {/* Voice Selection & Controls */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Mic className="w-3.5 h-3.5" />
+              <span className="font-mono uppercase tracking-wider">Voice:</span>
+            </div>
+            <Select value={selectedVoice} onValueChange={setSelectedVoice} disabled={isPlaying || isLoading}>
+              <SelectTrigger className="w-[180px] h-8 text-xs">
+                <SelectValue placeholder="Select voice" />
+              </SelectTrigger>
+              <SelectContent>
+                {PREMIUM_VOICES.map(voice => (
+                  <SelectItem key={voice.id} value={voice.id} className="text-xs">
+                    <span className="font-medium">{voice.name}</span>
+                    <span className="text-muted-foreground ml-1">- {voice.description}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           
           <div className="flex flex-wrap gap-2 pt-2">
             <Button
@@ -261,15 +251,21 @@ https://earth-anomaly.lovable.app
               COPY
             </Button>
             <Button
-              variant="outline"
+              variant={isPlaying ? "destructive" : "default"}
               size="sm"
-              onClick={speakNarration}
+              onClick={handleSpeak}
+              disabled={isLoading}
               className={cn(
-                "border-primary/40 hover:border-primary hover:bg-primary/10 font-display tracking-wider text-xs",
-                isSpeaking && "border-primary bg-primary/20"
+                "font-display tracking-wider text-xs min-w-[100px]",
+                !isPlaying && "bg-primary hover:bg-primary/90"
               )}
             >
-              {isSpeaking ? (
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                  LOADING
+                </>
+              ) : isPlaying ? (
                 <>
                   <VolumeX className="w-3.5 h-3.5 mr-2" />
                   STOP
@@ -277,7 +273,7 @@ https://earth-anomaly.lovable.app
               ) : (
                 <>
                   <Volume2 className="w-3.5 h-3.5 mr-2" />
-                  SPEAK
+                  LISTEN
                 </>
               )}
             </Button>
