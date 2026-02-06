@@ -30,26 +30,67 @@ export function AnalysisResult({ analysis, narration, imageUrl }: AnalysisResult
   };
 
   const speakNarration = () => {
-    if ('speechSynthesis' in window) {
-      if (isSpeaking) {
-        speechSynthesis.cancel();
-        setIsSpeaking(false);
-        return;
-      }
-
-      const utterance = new SpeechSynthesisUtterance(narration);
-      utterance.rate = 0.85;
-      utterance.pitch = 0.7;
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      
-      speechSynthesis.speak(utterance);
-      setIsSpeaking(true);
-    } else {
+    if (!('speechSynthesis' in window)) {
       toast.error("Speech not supported", {
         description: "Your browser doesn't support text-to-speech",
       });
+      return;
     }
+
+    if (isSpeaking) {
+      speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+
+    // Cancel any existing speech first
+    speechSynthesis.cancel();
+
+    // Create utterance immediately in user gesture context
+    const utterance = new SpeechSynthesisUtterance(narration);
+    utterance.rate = 0.85;
+    utterance.pitch = 0.7;
+    utterance.volume = 1.0;
+    
+    utterance.onstart = () => {
+      console.log('Speech started');
+      setIsSpeaking(true);
+    };
+    utterance.onend = () => {
+      console.log('Speech ended');
+      setIsSpeaking(false);
+    };
+    utterance.onerror = (e) => {
+      console.error('Speech error:', e);
+      setIsSpeaking(false);
+      toast.error("Speech failed to play");
+    };
+
+    // Get voices and set one if available
+    const voices = speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+      utterance.voice = englishVoice;
+    }
+    
+    // Speak immediately - must happen synchronously in click handler
+    setIsSpeaking(true);
+    speechSynthesis.speak(utterance);
+    
+    // Chrome bug workaround: speech can pause after ~15 seconds
+    const resumeInterval = setInterval(() => {
+      if (!speechSynthesis.speaking) {
+        clearInterval(resumeInterval);
+      } else {
+        speechSynthesis.pause();
+        speechSynthesis.resume();
+      }
+    }, 10000);
+    
+    utterance.onend = () => {
+      clearInterval(resumeInterval);
+      setIsSpeaking(false);
+    };
   };
 
   const downloadReport = () => {

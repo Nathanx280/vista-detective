@@ -248,6 +248,11 @@ export function DiscoveryDetailDialog({
   };
 
   const handleSpeak = () => {
+    if (!('speechSynthesis' in window)) {
+      toast.error("Speech not supported in this browser");
+      return;
+    }
+
     if (isSpeaking) {
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
@@ -255,16 +260,60 @@ export function DiscoveryDetailDialog({
     }
 
     const text = discovery.narration || discovery.ai_analysis;
-    if (!text) return;
+    if (!text) {
+      toast.error("No text to speak");
+      return;
+    }
 
+    // Cancel any existing speech first
+    window.speechSynthesis.cancel();
+
+    // Create utterance immediately in user gesture context
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.9;
     utterance.pitch = 0.8;
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    utterance.volume = 1.0;
     
+    utterance.onstart = () => {
+      console.log('Speech started');
+      setIsSpeaking(true);
+    };
+    utterance.onend = () => {
+      console.log('Speech ended');
+      setIsSpeaking(false);
+    };
+    utterance.onerror = (e) => {
+      console.error('Speech error:', e);
+      setIsSpeaking(false);
+      toast.error("Speech failed to play");
+    };
+
+    // Get voices and set one if available
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      // Prefer English voices
+      const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+      utterance.voice = englishVoice;
+    }
+    
+    // Speak immediately - must happen synchronously in click handler
     setIsSpeaking(true);
     window.speechSynthesis.speak(utterance);
+    
+    // Chrome bug workaround: speech can pause after ~15 seconds
+    const resumeInterval = setInterval(() => {
+      if (!window.speechSynthesis.speaking) {
+        clearInterval(resumeInterval);
+      } else {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    }, 10000);
+    
+    utterance.onend = () => {
+      clearInterval(resumeInterval);
+      setIsSpeaking(false);
+    };
   };
 
   const handleToggleFullscreen = async () => {
