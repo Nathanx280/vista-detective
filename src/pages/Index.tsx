@@ -3,6 +3,10 @@ import { ImageUploader } from "@/components/ImageUploader";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { DiscoveryGallery } from "@/components/DiscoveryGallery";
 import { HeroSection } from "@/components/HeroSection";
+import { MissionPanel } from "@/components/MissionPanel";
+import { AnomalyMap } from "@/components/AnomalyMap";
+import { AnomalyArtGenerator } from "@/components/AnomalyArtGenerator";
+import { ThreatAssessment } from "@/components/ThreatAssessment";
 import { ParticleField } from "@/components/effects/ParticleField";
 import { GlowOrbs } from "@/components/effects/GlowOrbs";
 import { GridOverlay } from "@/components/effects/GridOverlay";
@@ -11,6 +15,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Radar, Zap, ArrowDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useMissions } from "@/hooks/use-missions";
+import { useQuery } from "@tanstack/react-query";
+import { Discovery } from "@/types/discovery";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface AnalysisData {
   anomaly_score: number;
@@ -27,10 +35,29 @@ const Index = () => {
     analysis: AnalysisData;
     narration: string;
   } | null>(null);
+  const [currentDiscoveryId, setCurrentDiscoveryId] = useState<string | null>(null);
+
+  const { progress, rank, recordScan, recordArtGeneration, recordFavorite } = useMissions();
+
+  // Fetch discoveries for the map
+  const { data: mapDiscoveries = [] } = useQuery({
+    queryKey: ["discoveries"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("discoveries")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      return data as Discovery[];
+    },
+    refetchInterval: 5000,
+  });
 
   const handleImageSelect = (imageData: string) => {
     setCurrentImage(imageData);
     setAnalysisResult(null);
+    setCurrentDiscoveryId(null);
   };
 
   const analyzeImage = async () => {
@@ -40,36 +67,24 @@ const Index = () => {
     setAnalysisResult(null);
 
     try {
-      // First, create a discovery record
       const { data: discovery, error: insertError } = await supabase
         .from("discoveries")
-        .insert({
-          image_url: currentImage,
-          status: "pending",
-        })
+        .insert({ image_url: currentImage, status: "pending" })
         .select()
         .single();
 
       if (insertError) throw insertError;
+      setCurrentDiscoveryId(discovery.id);
 
-      // Call the analyze edge function
       const { data, error } = await supabase.functions.invoke("analyze-image", {
-        body: {
-          imageUrl: currentImage,
-          discoveryId: discovery.id,
-        },
+        body: { imageUrl: currentImage, discoveryId: discovery.id },
       });
 
       if (error) throw error;
+      if (data.error) throw new Error(data.error);
 
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      setAnalysisResult({
-        analysis: data.analysis,
-        narration: data.narration,
-      });
+      setAnalysisResult({ analysis: data.analysis, narration: data.narration });
+      recordScan(data.analysis.anomaly_score);
 
       const scoreEmoji = data.analysis.anomaly_score >= 7 ? "🔴" : data.analysis.anomaly_score >= 5 ? "🟡" : "🟢";
       toast.success(`${scoreEmoji} Analysis Complete!`, {
@@ -87,14 +102,12 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
-      {/* Background effects */}
       <ParticleField />
       <GlowOrbs />
       <GridOverlay />
       <div className="noise-overlay" />
       <div className="scanline opacity-20" />
 
-      {/* Hero gradient overlay */}
       <div 
         className="fixed inset-x-0 top-0 h-[50vh] pointer-events-none z-0"
         style={{
@@ -103,23 +116,31 @@ const Index = () => {
       />
 
       <div className="relative z-10 container mx-auto px-4 py-6 md:py-10 max-w-6xl">
-        {/* Header */}
         <HeroSection />
 
-        {/* Main Content */}
         <main className="space-y-12 md:space-y-16">
+          {/* Agent Status / Mission Panel */}
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
+          >
+            <MissionPanel progress={progress} rank={rank} />
+          </motion.section>
+
           {/* Upload Section */}
-          <section className="glass-panel p-4 md:p-8 rounded-2xl relative overflow-hidden">
-            {/* Section header */}
+          <motion.section
+            className="glass-panel p-4 md:p-8 rounded-2xl relative overflow-hidden"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.3 }}
+          >
             <div className="flex items-center gap-2 mb-6 text-muted-foreground">
               <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
               <span className="font-mono text-xs tracking-wider uppercase">Upload Module</span>
             </div>
 
-            <ImageUploader 
-              onImageSelect={handleImageSelect} 
-              isAnalyzing={isAnalyzing}
-            />
+            <ImageUploader onImageSelect={handleImageSelect} isAnalyzing={isAnalyzing} />
 
             {currentImage && !isAnalyzing && !analysisResult && (
               <div className="mt-8 flex flex-col items-center gap-4">
@@ -131,8 +152,7 @@ const Index = () => {
                     "font-display tracking-widest text-base md:text-lg px-8 md:px-12 py-6 md:py-7 rounded-xl",
                     "bg-gradient-to-r from-primary via-primary to-primary/80",
                     "hover:from-primary/90 hover:via-primary hover:to-primary/70",
-                    "btn-primary-glow",
-                    "transition-all duration-300"
+                    "btn-primary-glow transition-all duration-300"
                   )}
                 >
                   <Radar className="w-5 h-5 mr-3 animate-pulse" />
@@ -141,38 +161,81 @@ const Index = () => {
                 </Button>
               </div>
             )}
-          </section>
+          </motion.section>
 
           {/* Analysis Results */}
-          {analysisResult && (
-            <section className="glass-panel-glow p-4 md:p-8 rounded-2xl animate-in fade-in slide-in-from-bottom-6 duration-700">
-              {/* Section header */}
-              <div className="flex items-center gap-2 mb-6 text-destructive">
-                <div className="w-1.5 h-1.5 bg-destructive rounded-full animate-pulse" />
-                <span className="font-mono text-xs tracking-wider uppercase">Analysis Results</span>
-              </div>
+          <AnimatePresence>
+            {analysisResult && (
+              <motion.section
+                className="space-y-6"
+                initial={{ opacity: 0, y: 30 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                transition={{ duration: 0.7 }}
+              >
+                <div className="glass-panel-glow p-4 md:p-8 rounded-2xl">
+                  <div className="flex items-center gap-2 mb-6 text-destructive">
+                    <div className="w-1.5 h-1.5 bg-destructive rounded-full animate-pulse" />
+                    <span className="font-mono text-xs tracking-wider uppercase">Analysis Results</span>
+                  </div>
 
-              <AnalysisResult
-                analysis={analysisResult.analysis}
-                narration={analysisResult.narration}
-                imageUrl={currentImage || undefined}
-              />
-            </section>
+                  <AnalysisResult
+                    analysis={analysisResult.analysis}
+                    narration={analysisResult.narration}
+                    imageUrl={currentImage || undefined}
+                  />
+                </div>
+
+                {/* Threat Assessment + AI Art side by side */}
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div className="glass-panel p-4 md:p-6 rounded-2xl">
+                    <ThreatAssessment
+                      score={analysisResult.analysis.anomaly_score}
+                      anomalyTypes={analysisResult.analysis.anomaly_types}
+                      mysteryLevel={analysisResult.analysis.mystery_level}
+                    />
+                  </div>
+
+                  <AnomalyArtGenerator
+                    discoveryId={currentDiscoveryId || undefined}
+                    analysisText={analysisResult.analysis.analysis}
+                    anomalyTypes={analysisResult.analysis.anomaly_types}
+                    anomalyScore={analysisResult.analysis.anomaly_score}
+                    onArtGenerated={recordArtGeneration}
+                  />
+                </div>
+              </motion.section>
+            )}
+          </AnimatePresence>
+
+          {/* Anomaly Map */}
+          {mapDiscoveries.length > 0 && (
+            <motion.section
+              className="glass-panel p-4 md:p-8 rounded-2xl"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.4 }}
+            >
+              <AnomalyMap discoveries={mapDiscoveries} />
+            </motion.section>
           )}
 
           {/* Discovery Gallery */}
-          <section className="glass-panel p-4 md:p-8 rounded-2xl">
-            {/* Section header */}
+          <motion.section
+            className="glass-panel p-4 md:p-8 rounded-2xl"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.5 }}
+          >
             <div className="flex items-center gap-2 mb-6 text-muted-foreground">
               <div className="w-1.5 h-1.5 bg-primary rounded-full animate-pulse" />
               <span className="font-mono text-xs tracking-wider uppercase">Discovery Archive</span>
             </div>
             
             <DiscoveryGallery onImportImage={handleImageSelect} />
-          </section>
+          </motion.section>
         </main>
 
-        {/* Footer */}
         <footer className="mt-16 md:mt-24 py-8 text-center border-t border-border/30">
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground/60 font-mono">

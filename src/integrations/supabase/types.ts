@@ -17,6 +17,7 @@ export type Database = {
       discoveries: {
         Row: {
           ai_analysis: string | null
+          ai_art_url: string | null
           anomaly_score: number | null
           anomaly_types: string[] | null
           created_at: string
@@ -29,6 +30,7 @@ export type Database = {
         }
         Insert: {
           ai_analysis?: string | null
+          ai_art_url?: string | null
           anomaly_score?: number | null
           anomaly_types?: string[] | null
           created_at?: string
@@ -41,6 +43,7 @@ export type Database = {
         }
         Update: {
           ai_analysis?: string | null
+          ai_art_url?: string | null
           anomaly_score?: number | null
           anomaly_types?: string[] | null
           created_at?: string
